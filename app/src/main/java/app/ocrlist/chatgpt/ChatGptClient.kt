@@ -4,25 +4,18 @@ import android.content.Context
 import android.graphics.Bitmap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import okhttp3.Call
-import okhttp3.Callback
 import okhttp3.FormBody
 import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
-import okhttp3.Response
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
-import java.io.IOException
 import java.net.URI
 import java.util.Base64
-import java.util.concurrent.TimeUnit
 
 data class ChatGptModel(val id: String, val name: String)
 data class ChatGptAccount(val id: String, val label: String, val connected: Boolean)
@@ -40,9 +33,9 @@ class ChatGptClient(context: Context) {
     private var data: JSONObject? = null
     var state = ChatGptState()
         private set
-    private val http = OkHttpClient.Builder().connectTimeout(20, TimeUnit.SECONDS)
-        .readTimeout(90, TimeUnit.SECONDS).callTimeout(150, TimeUnit.SECONDS)
-        .followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(false).build()
+    private val http = ChatGptHttp()
+    private data class IdentityMetadata(val config: JSONObject, val keys: JSONObject, val loadedAt: Long)
+    private var identityMetadata: IdentityMetadata? = null
 
     suspend fun initialize() = mutex.withLock {
         try { data = withContext(Dispatchers.IO) { store.load() }; updateState() }
@@ -79,6 +72,9 @@ class ChatGptClient(context: Context) {
 
     suspend fun beginSignIn(accountId: String? = null): LoopbackSignIn = mutex.withLock {
         val account = accounts().firstOrNull { it.getString("clientId") == accountId }
+        // Fetch public identity documents BEFORE consuming a one-time authorization code.
+        // This also reports app-level DNS/TLS problems before sending the user through the browser.
+        loadIdentityMetadata(force = true)
         withContext(Dispatchers.IO) {
             LoopbackSignIn(document().getString("host"), account?.getString("clientId"), account?.optString("email"))
         }
@@ -87,10 +83,10 @@ class ChatGptClient(context: Context) {
     suspend fun finishSignIn(attempt: LoopbackSignIn, callback: ChatGptProtocol.Callback) = mutex.withLock {
         if (callback.denied) throw ChatGptException("Sign-in was cancelled or plan access was not granted. Your existing connection was kept.")
         val clientId = callback.clientId ?: throw ChatGptException("Sign-in did not return an app registration.")
-        val tokens = json(Request.Builder().url(ChatGptProtocol.TOKEN).post(form(
+        val tokens = http.json(Request.Builder().url(ChatGptProtocol.TOKEN).post(form(
             "grant_type" to "authorization_code", "client_id" to clientId, "code" to callback.code!!,
             "code_verifier" to attempt.verifier, "redirect_uri" to attempt.redirect, "resource" to ChatGptProtocol.RESOURCE,
-        )).build())
+        )).build(), OpenAiOperation.TOKEN_EXCHANGE)
         requirePlanAccess(tokens.optString("scope"))
         val old = accounts().firstOrNull { it.getString("clientId") == clientId }
         val identity = verifyIdentity(tokens.getString("id_token"), clientId, attempt.nonce, old?.getString("subject"))
@@ -115,7 +111,7 @@ class ChatGptClient(context: Context) {
     suspend fun refreshModels() = mutex.withLock {
         val account = active()
         val token = accessToken(account)
-        val response = json(Request.Builder().url("${ChatGptProtocol.RESOURCE}/models").header("Authorization", "Bearer $token").build())
+        val response = http.json(Request.Builder().url("${ChatGptProtocol.RESOURCE}/models").header("Authorization", "Bearer $token").build(), OpenAiOperation.MODELS)
         val source = response.getJSONArray("models")
         val choices = JSONArray()
         for (index in 0 until source.length()) {
@@ -146,7 +142,7 @@ class ChatGptClient(context: Context) {
         val request = Request.Builder().url("${ChatGptProtocol.RESOURCE}/responses")
             .header("Authorization", "Bearer $token").header("Accept", "text/event-stream")
             .post(payload.toRequestBody("application/json".toMediaType())).build()
-        val text = execute(request) { response ->
+        val text = http.execute(request, OpenAiOperation.TRANSCRIPTION) { response ->
             ChatGptResponses.readStream(response.body?.charStream()?.buffered()
                 ?: throw ChatGptException("ChatGPT returned an empty response."))
         }
@@ -157,12 +153,13 @@ class ChatGptClient(context: Context) {
     private suspend fun accessToken(account: JSONObject): String {
         if (account.optString("accessToken").isBlank()) throw ChatGptException("Sign in to this ChatGPT account again.")
         if (account.optLong("expiresAt") > System.currentTimeMillis() + 60_000) return account.getString("accessToken")
+        loadIdentityMetadata()
         val tokens = try {
-            json(Request.Builder().url(ChatGptProtocol.TOKEN).post(form(
+            http.json(Request.Builder().url(ChatGptProtocol.TOKEN).post(form(
                 "grant_type" to "refresh_token", "client_id" to account.getString("clientId"),
                 "refresh_token" to account.getString("refreshToken"), "resource" to ChatGptProtocol.RESOURCE,
-            )).build())
-        } catch (error: HttpFailure) {
+            )).build(), OpenAiOperation.TOKEN_REFRESH)
+        } catch (error: OpenAiHttpFailure) {
             if (error.code == "invalid_grant" || error.status == 401) { clearTokens(account); save() }
             throw error
         }
@@ -192,9 +189,12 @@ class ChatGptClient(context: Context) {
     }
 
     private suspend fun verifyIdentity(token: String, client: String, nonce: String?, subject: String?): OpenAiIdentity.Identity {
-        val config = discovery()
-        // Fresh JWKS for each login/refresh validation also handles signing-key rotation.
-        val keys = json(Request.Builder().url(trustedAuthUrl(config.getString("jwks_uri"))).build())
+        val metadata = loadIdentityMetadata()
+        // An unknown signing key may have rotated since the public documents were fetched.
+        val keyId = runCatching { com.nimbusds.jwt.SignedJWT.parse(token).header.keyID }.getOrNull()
+        val knownKeys = metadata.keys.optJSONArray("keys") ?: JSONArray()
+        val known = keyId != null && (0 until knownKeys.length()).any { knownKeys.getJSONObject(it).optString("kid") == keyId }
+        val keys = if (known || keyId == null) metadata.keys else loadIdentityMetadata(force = true).keys
         return OpenAiIdentity.verify(token, keys.toString(), client, nonce, subject)
     }
 
@@ -205,9 +205,9 @@ class ChatGptClient(context: Context) {
         if (!revoked) {
             for (retry in 0..1) {
                 try {
-                    val endpoint = trustedAuthUrl(discovery().getString("revocation_endpoint"))
-                    execute(Request.Builder().url(endpoint).post(form("token" to account.getString("refreshToken"),
-                        "token_type_hint" to "refresh_token", "client_id" to account.getString("clientId"))).build()) { }
+                    val endpoint = trustedAuthUrl(loadIdentityMetadata().config.getString("revocation_endpoint"))
+                    http.execute(Request.Builder().url(endpoint).post(form("token" to account.getString("refreshToken"),
+                        "token_type_hint" to "refresh_token", "client_id" to account.getString("clientId"))).build(), OpenAiOperation.SIGN_OUT) { }
                     revoked = true; break
                 } catch (error: kotlinx.coroutines.CancellationException) { throw error }
                 catch (_: Exception) { if (retry == 0) delay(500) }
@@ -228,8 +228,12 @@ class ChatGptClient(context: Context) {
     private fun clearTokens(account: JSONObject) {
         listOf("accessToken", "refreshToken", "idToken", "expiresAt", "scope").forEach { account.remove(it) }
     }
-    private suspend fun discovery(): JSONObject = json(Request.Builder().url("${ChatGptProtocol.ISSUER}/.well-known/openid-configuration").build()).also {
-        if (it.getString("issuer") != ChatGptProtocol.ISSUER) throw ChatGptException("OpenAI’s identity service could not be verified.")
+    private suspend fun loadIdentityMetadata(force: Boolean = false): IdentityMetadata {
+        identityMetadata?.takeIf { !force && System.currentTimeMillis() - it.loadedAt < 3_600_000 }?.let { return it }
+        val config = http.json(Request.Builder().url("${ChatGptProtocol.ISSUER}/.well-known/openid-configuration").build(), OpenAiOperation.DISCOVERY)
+        if (config.getString("issuer") != ChatGptProtocol.ISSUER) throw ChatGptException("OpenAI’s identity service could not be verified.")
+        val keys = http.json(Request.Builder().url(trustedAuthUrl(config.getString("jwks_uri"))).build(), OpenAiOperation.SIGNING_KEYS)
+        return IdentityMetadata(config, keys, System.currentTimeMillis()).also { identityMetadata = it }
     }
     private fun trustedAuthUrl(value: String): String {
         val uri = URI(value)
@@ -239,31 +243,5 @@ class ChatGptClient(context: Context) {
         return value
     }
     private fun form(vararg values: Pair<String, String>) = FormBody.Builder().apply { values.forEach { add(it.first, it.second) } }.build()
-    private suspend fun json(request: Request): JSONObject = execute(request) { JSONObject(it.body?.string().orEmpty()) }
-
-    private class HttpFailure(val status: Int, val code: String) : ChatGptException(ChatGptResponses.errorMessage(code, status))
-
-    private suspend fun <T> execute(request: Request, consume: (Response) -> T): T = suspendCancellableCoroutine { continuation ->
-        val call = http.newCall(request)
-        continuation.invokeOnCancellation { call.cancel() }
-        call.enqueue(object : Callback {
-            override fun onFailure(call: Call, e: IOException) {
-                continuation.resumeWith(Result.failure(ChatGptException("Could not connect to OpenAI. Check your internet connection and try again.")))
-            }
-            override fun onResponse(call: Call, response: Response) {
-                continuation.resumeWith(runCatching {
-                    response.use {
-                        if (!it.isSuccessful) {
-                            val error = runCatching { JSONObject(it.body?.string().orEmpty()) }.getOrNull()
-                            val code = error?.optJSONObject("error")?.optString("code") ?: error?.optString("error").orEmpty()
-                            throw HttpFailure(it.code, code)
-                        }
-                        consume(it)
-                    }
-                })
-            }
-        })
-    }
-
-    fun close() { http.dispatcher.cancelAll(); http.connectionPool.evictAll() }
+    fun close() { http.close() }
 }

@@ -43,6 +43,14 @@ Protocol references:
 - [Models and inference](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference)
 - [Preview limitations](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations)
 
+### If connecting fails
+
+Connection errors name the failing step (sign-in configuration, identity keys, token exchange, session refresh, or model loading), the server, and a safe diagnostic category such as DNS, TLS, or timeout. They do not include authorization codes, tokens, raw server responses, or credential-bearing URLs. Report that full message when troubleshooting.
+
+The app fetches public identity configuration and signing keys before opening the browser so a failed identity-document download does not waste a one-time sign-in code. Network address fallback is enabled, but credential/photo POST bodies are marked one-shot and are not automatically replayed after they may have been sent. Certificate verification remains enabled.
+
+If the app says **sign-in completed, but models could not load**, your connection was saved. Try **Recognition → Refresh available models** rather than repeating browser sign-in (unless the message specifically says your session was rejected). For DNS/connection problems, try Wi-Fi versus mobile data and check Private DNS, VPN, or per-app network restrictions. For TLS errors, also check the device clock. Browser connectivity alone does not confirm that the app can reach the same services.
+
 ## Build from the command line
 
 Requires **JDK 17**, Android SDK command-line tools, and Android SDK platform 35. The Gradle wrapper is included; Android Studio is optional. Minimum device version: **Android 9 (API 28)**.

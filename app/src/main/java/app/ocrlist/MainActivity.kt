@@ -106,7 +106,9 @@ class MainActivity : AppCompatActivity() {
         }
         model.message.observe(this) { message ->
             if (message != null) {
-                Snackbar.make(root, message, Snackbar.LENGTH_INDEFINITE).setAction("OK") {}.show()
+                Snackbar.make(root, message, Snackbar.LENGTH_INDEFINITE).setAction("OK") {}.apply {
+                    view.findViewById<TextView>(com.google.android.material.R.id.snackbar_text).maxLines = 10
+                }.show()
                 model.message.value = null
             }
         }

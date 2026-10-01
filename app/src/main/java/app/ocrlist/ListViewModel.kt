@@ -10,6 +10,7 @@ import app.ocrlist.chatgpt.ChatGptClient
 import app.ocrlist.chatgpt.ChatGptException
 import app.ocrlist.chatgpt.ChatGptState
 import app.ocrlist.chatgpt.LoopbackSignIn
+import app.ocrlist.chatgpt.OpenAiHttpFailure
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
@@ -84,7 +85,15 @@ class ListViewModel(application: Application) : AndroidViewModel(application) {
             val callback = attempt.awaitCallback()
             attempt.close()
             chat.finishSignIn(attempt, callback)
-            chat.refreshModels()
+            try { chat.refreshModels() }
+            catch (error: CancellationException) { throw error }
+            catch (error: Exception) {
+                val detail = (error as? ChatGptException)?.message ?: "OpenAI returned an unexpected model list."
+                val recovery = if (error is OpenAiHttpFailure && error.status == 401) "Sign in again in Recognition settings."
+                    else "Open Recognition → Refresh available models; no need to sign in again."
+                message.value = "Sign-in completed, but models could not load. $detail $recovery"
+                return@accountAction
+            }
             message.value = "ChatGPT connected. Scans now send a photo to OpenAI and use your ChatGPT plan."
         } finally { signIn?.close(); signIn = null; browserUrl.value = null }
     }
