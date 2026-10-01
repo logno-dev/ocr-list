@@ -44,4 +44,6 @@ out/
 local.properties
 *.jks
 *.keystore
+# Public development signing identity: intentionally shared to keep sideload updates installable.
+!.github/ocr-list-development.keystore
 captures/

@@ -16,6 +16,9 @@ import androidx.test.espresso.assertion.ViewAssertions.matches
 import androidx.test.espresso.matcher.ViewMatchers.*
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import app.ocrlist.chatgpt.CredentialStore
+import org.json.JSONArray
+import org.json.JSONObject
 import org.hamcrest.Matchers.allOf
 import org.junit.Assert.*
 import org.junit.Before
@@ -28,7 +31,7 @@ class AppInstrumentedTest {
     private val app = ApplicationProvider.getApplicationContext<Application>()
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
 
-    @Before fun reset() { ListStore(app).save(emptyList()) }
+    @Before fun reset() { ListStore(app).save(emptyList()); CredentialStore(app).reset() }
 
     @Test fun checklistSurvivesRecreationAndKeepsCheckedItemsInPlace() {
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
@@ -94,7 +97,7 @@ class AppInstrumentedTest {
     @Test fun storageRoundTripsCorrectionsAndPhotoReferences() {
         val bounds = PhotoBounds(.1f, .2f, .8f, .3f)
         val list = Checklist(title = "Groceries", photo = "photos/example.image", items = listOf(
-            ListItem(text = "Oat milk", quantity = "2", checked = true, originalText = "2x 0at milk", bounds = bounds),
+            ListItem(text = "Oat milk", quantity = "2", checked = true, originalText = "2x 0at milk", bounds = bounds, needsReview = true),
             ListItem(text = "Bread"),
         ))
         val store = ListStore(app)
@@ -109,6 +112,39 @@ class AppInstrumentedTest {
         onView(withText("+  Add item")).perform(click())
         onView(allOf(isAssignableFrom(android.widget.EditText::class.java), withHint("Item"))).perform(typeText(text), closeSoftKeyboard())
         onView(withText("Save")).perform(click())
+    }
+
+    @Test fun recognitionSettingsExplainsCloudUseWithoutApiKey() {
+        ActivityScenario.launch(MainActivity::class.java).use {
+            instrumentation.waitForIdleSync()
+            onView(withText("Recognition: on-device")).perform(click())
+            onView(withText("Continue with ChatGPT")).perform(scrollTo()).check(matches(isDisplayed()))
+            onView(withText("ChatGPT usage & app access")).perform(scrollTo()).check(matches(isDisplayed()))
+            onView(withText("Done")).perform(click())
+        }
+    }
+
+    @Test fun failedCloudSetupPreservesOriginalPhotoForRetry() {
+        CredentialStore(app).save(JSONObject().put("host", "urn:uuid:test").put("accounts", JSONArray())
+            .put("useCloud", true))
+        val photo = File(app.cacheDir, "failed-cloud-test.png")
+        val bitmap = Bitmap.createBitmap(100, 100, Bitmap.Config.ARGB_8888)
+        photo.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        bitmap.recycle()
+        val viewModelStore = ViewModelStore()
+        lateinit var model: ListViewModel
+        instrumentation.runOnMainSync {
+            model = ViewModelProvider(viewModelStore, ViewModelProvider.AndroidViewModelFactory(app))[ListViewModel::class.java]
+        }
+        waitUntil { model.busy.value == false }
+        instrumentation.runOnMainSync { model.scan(Uri.fromFile(photo)) }
+        waitUntil { model.busy.value == false }
+        val saved = ListStore(app).load().single()
+        assertTrue(saved.items.isEmpty())
+        assertArrayEquals(photo.readBytes(), File(app.filesDir, saved.photo!!).readBytes())
+        assertTrue(model.message.value!!.contains("Photo saved"))
+        instrumentation.runOnMainSync { model.delete(saved); viewModelStore.clear() }
+        photo.delete()
     }
 
     private fun waitUntil(condition: () -> Boolean) {

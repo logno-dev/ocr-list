@@ -11,6 +11,7 @@ data class ListItem(
     val checked: Boolean = false,
     val originalText: String = "",
     val bounds: PhotoBounds? = null,
+    val needsReview: Boolean = false,
 )
 
 data class Checklist(

@@ -1,5 +1,6 @@
 package app.ocrlist
 
+import android.content.Intent
 import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Color
@@ -87,6 +88,19 @@ class MainActivity : AppCompatActivity() {
         })
         model.lists.observe(this) { render() }
         model.busy.observe(this) { render() }
+        model.status.observe(this) { render() }
+        model.chatState.observe(this) { render() }
+        model.authBusy.observe(this) { render() }
+        model.browserUrl.observe(this) { url ->
+            if (url != null) {
+                model.browserUrl.value = null
+                try { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
+                catch (_: Exception) {
+                    model.cancelSignIn()
+                    model.message.value = "Install or enable a web browser to sign in with ChatGPT."
+                }
+            }
+        }
         model.openList.observe(this) { id ->
             if (id != null) { selectedId = id; model.openList.value = null; render() }
         }
@@ -136,6 +150,9 @@ class MainActivity : AppCompatActivity() {
         if (list == null) {
             header.addView(label("OCR List", 32f).apply { setTypeface(typeface, Typeface.BOLD) })
             header.addView(label("From paper to done.", 16f, muted))
+            header.addView(button(if (model.chatState.value?.useCloud == true) "Recognition: ChatGPT" else "Recognition: on-device", true) {
+                recognitionSettings()
+            }.apply { isEnabled = model.busy.value != true && model.authBusy.value != true })
         } else {
             header.addView(button("‹  All lists", true) { selectedId = null; render() }.apply {
                 layoutParams = LinearLayout.LayoutParams(-2, -2)
@@ -154,7 +171,12 @@ class MainActivity : AppCompatActivity() {
         }
         if (model.busy.value == true) {
             header.addView(LinearProgressIndicator(this).apply { isIndeterminate = true })
-            header.addView(label("Reading on your device…", 14f, muted))
+            header.addView(label(model.status.value.orEmpty(), 14f, muted))
+        }
+        if (model.authBusy.value == true) {
+            header.addView(LinearProgressIndicator(this).apply { isIndeterminate = true })
+            header.addView(label("Connecting to ChatGPT…", 14f, muted))
+            header.addView(button("Cancel connection", true) { model.cancelSignIn() })
         }
         val body = column().apply { setPadding(dp(20), dp(16), dp(20), dp(20)) }
         scroll = ScrollView(this).apply {
@@ -164,9 +186,10 @@ class MainActivity : AppCompatActivity() {
         if (list == null) renderHome(body) else renderList(body, list)
         val footer = column().apply { setPadding(dp(20), dp(4), dp(20), dp(12)) }
         if (list == null) {
-            footer.addView(button("Scan a list") { scanOptions() }.apply { isEnabled = model.busy.value != true && !model.loadFailed })
+            footer.addView(button("Scan a list") { scanOptions() }.apply { isEnabled = model.busy.value != true && model.authBusy.value != true && !model.loadFailed })
             footer.addView(button("Start a blank list", true) { model.create() }.apply { isEnabled = model.busy.value != true && !model.loadFailed })
-            footer.addView(label("On-device recognition. No account. No uploads.", 12f, muted).apply { gravity = Gravity.CENTER })
+            val privacy = if (model.chatState.value?.useCloud == true) "Photos sent to OpenAI · uses your ChatGPT plan" else "On-device recognition · no photo uploads"
+            footer.addView(label(privacy, 12f, muted).apply { gravity = Gravity.CENTER })
         } else {
             footer.addView(button("+  Add item") { editItem(null) })
         }
@@ -233,6 +256,7 @@ class MainActivity : AppCompatActivity() {
                 if (item.checked) paintFlags = paintFlags or Paint.STRIKE_THRU_TEXT_FLAG
             })
             if (item.bounds != null) words.addView(label("Tap to edit · photo reference", 11f, muted))
+            if (item.needsReview) words.addView(label("Review handwriting", 12f, muted).apply { setTypeface(typeface, Typeface.BOLD) })
             line.addView(words, LinearLayout.LayoutParams(0, -2, 1f))
             if (item.quantity.isNotBlank()) line.addView(label("× ${item.quantity}", 16f, muted).apply { setOnClickListener { editItem(item.id) } })
             body.addView(card(line))
@@ -240,7 +264,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun scanOptions() {
-        MaterialAlertDialogBuilder(this).setTitle("Scan a list")
+        if (model.chatState.value?.useCloud == true && model.chatState.value?.ready != true) {
+            recognitionSettings(); return
+        }
+        MaterialAlertDialogBuilder(this).setTitle(if (model.chatState.value?.useCloud == true) "Scan with ChatGPT" else "Scan on-device")
             .setItems(arrayOf("Take a photo", "Choose a photo")) { _, which ->
                 if (which == 1) picker.launch(androidx.activity.result.PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                 else takePhoto()
@@ -286,7 +313,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun listOptions(list: Checklist) {
         MaterialAlertDialogBuilder(this).setTitle(list.title)
-            .setItems(arrayOf("Rename list", "Uncheck all items", "Delete list")) { _, which ->
+            .setItems(arrayOf("Rename list", "Uncheck all items", "Delete list", "Scan photo again", "Recognition settings")) { _, which ->
                 when (which) {
                     0 -> rename(list)
                     1 -> MaterialAlertDialogBuilder(this).setTitle("Uncheck all items?")
@@ -297,6 +324,15 @@ class MainActivity : AppCompatActivity() {
                     2 -> MaterialAlertDialogBuilder(this).setTitle("Delete this list?")
                         .setMessage("This removes the list and its saved photo from this device.")
                         .setNegativeButton("Cancel", null).setPositiveButton("Delete") { _, _ -> model.delete(list) }.show()
+                    3 -> {
+                        if (list.photo == null) model.message.value = "This list has no saved photo. Scan a new photo from All lists."
+                        else if (model.busy.value == true || model.authBusy.value == true) model.message.value = "Wait for the current operation to finish."
+                        else if (model.chatState.value?.useCloud == true && model.chatState.value?.ready != true) recognitionSettings()
+                        else MaterialAlertDialogBuilder(this).setTitle("Scan photo again?")
+                            .setMessage("Create a new list from this photo using ${if (model.chatState.value?.useCloud == true) "ChatGPT (photo sent to OpenAI)" else "on-device recognition"}. Your current list and corrections stay saved.")
+                            .setNegativeButton("Cancel", null).setPositiveButton("Scan") { _, _ -> model.rescan(list) }.show()
+                    }
+                    4 -> if (model.busy.value != true && model.authBusy.value != true) recognitionSettings()
                 }
             }.show()
     }
@@ -323,7 +359,11 @@ class MainActivity : AppCompatActivity() {
                 val bottom = ((b.bottom + .015f) * bitmap.height).toInt().coerceIn(top + 1, bitmap.height)
                 crop.setImageBitmap(Bitmap.createBitmap(bitmap, left, top, right - left, bottom - top))
             }
+        } else if (list.photo != null) {
+            content.addView(button("View original photo", true) { showPhoto(list) })
+            content.addView(label("No reliable per-item crop. Check the full photo for this entry.", 12f, muted))
         }
+        if (item?.needsReview == true) content.addView(label("ChatGPT was unsure of this handwriting. Check the photo; saving marks it reviewed.", 14f, muted))
         val name = field(content, "Item", item?.text.orEmpty()).apply {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES or InputType.TYPE_TEXT_FLAG_MULTI_LINE
         }
@@ -347,7 +387,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 val parsed = ItemParser.parse(text)
                 if (parsed == null) { name.error = "Enter an item after the list marker"; return@setOnClickListener }
-                val updated = item?.copy(text = text, quantity = count)
+                val updated = item?.copy(text = text, quantity = count, needsReview = false)
                     ?: parsed.copy(quantity = count.ifBlank { parsed.quantity })
                 val fresh = current() ?: return@setOnClickListener
                 val items = if (item == null) fresh.items + updated else fresh.items.map { if (it.id == item.id) updated else it }
@@ -384,5 +424,63 @@ class MainActivity : AppCompatActivity() {
         container.addView(label(DateFormat.getDateInstance().format(Date(list.createdAt)), 12f, muted).apply { gravity = Gravity.CENTER })
         MaterialAlertDialogBuilder(this).setTitle("Original photo").setView(container).setPositiveButton("Done", null).show()
         loadPhoto(list) { photo.setPhoto(it, bounds) }
+    }
+
+    private fun recognitionSettings() {
+        val state = model.chatState.value ?: return
+        val content = column().apply { setPadding(dp(24), dp(8), dp(24), dp(16)) }
+        val dialog = MaterialAlertDialogBuilder(this).setTitle("Recognition")
+            .setView(ScrollView(this).apply { addView(content) }).setPositiveButton("Done", null).create()
+        content.addView(label("On-device", 20f).apply { setTypeface(typeface, Typeface.BOLD) })
+        content.addView(label("Works offline. Best for printed text; handwriting recognition is limited.", 14f, muted))
+        content.addView(button(if (!state.useCloud) "On-device selected" else "Use on-device recognition", true) {
+            dialog.dismiss(); model.useOffline()
+        }.apply { isEnabled = state.useCloud })
+        content.addView(space(16))
+        content.addView(label("ChatGPT", 20f).apply { setTypeface(typeface, Typeface.BOLD) })
+        content.addView(label("Send a copy of your photo to OpenAI for recognition. Uses an eligible ChatGPT plan’s allowance; no API key or automatic API-billing fallback. Handwritten results still need review.", 14f, muted))
+        content.addView(space(8))
+        content.addView(label("In ChatGPT’s usage settings, disable additional credits for OCR List if you only want included plan usage.", 13f, muted))
+        content.addView(button("ChatGPT usage & app access", true) { openWeb("https://chatgpt.com/settings/usage") })
+        if (state.storageError) {
+            content.addView(label("Saved connections could not be decrypted. Reset them and sign in again. Lists and photos are kept.", 14f, muted))
+            content.addView(button("Reset saved connections", true) { dialog.dismiss(); model.resetConnections() })
+        } else {
+            state.active?.let { account ->
+                content.addView(label("Account: ${account.label}", 14f, muted))
+                if (account.connected) {
+                    if (!state.useCloud) content.addView(button("Use ChatGPT") { dialog.dismiss(); model.chooseAccount(account.id) })
+                    content.addView(label("Model: ${state.models.firstOrNull { it.id == state.model }?.name ?: "Choose a model"}", 14f, muted))
+                    content.addView(button("Choose model", true) {
+                        dialog.dismiss()
+                        if (state.models.isEmpty()) model.refreshModels()
+                        else MaterialAlertDialogBuilder(this).setTitle("ChatGPT model")
+                            .setSingleChoiceItems(state.models.map { it.name }.toTypedArray(), state.models.indexOfFirst { it.id == state.model }) { picker, which ->
+                                picker.dismiss(); model.chooseModel(state.models[which].id)
+                            }.setNegativeButton("Cancel", null).show()
+                    })
+                    content.addView(button("Refresh available models", true) { dialog.dismiss(); model.refreshModels() })
+                }
+                content.addView(button("Sign in again", true) { dialog.dismiss(); model.connectChatGpt(account.id) })
+                if (account.connected) content.addView(button("Sign out", true) { dialog.dismiss(); model.signOut() })
+            }
+            if (state.accounts.size > 1) content.addView(button("Switch account", true) {
+                dialog.dismiss()
+                MaterialAlertDialogBuilder(this).setTitle("ChatGPT account")
+                    .setItems(state.accounts.map { it.label + if (!it.connected) " (signed out)" else "" }.toTypedArray()) { _, which ->
+                        val account = state.accounts[which]
+                        if (account.connected) model.chooseAccount(account.id) else model.connectChatGpt(account.id)
+                    }.setNegativeButton("Cancel", null).show()
+            })
+            content.addView(button(if (state.accounts.isEmpty()) "Continue with ChatGPT" else "Connect another ChatGPT account", true) {
+                dialog.dismiss(); model.connectChatGpt()
+            })
+        }
+        dialog.show()
+    }
+
+    private fun openWeb(url: String) {
+        try { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
+        catch (_: Exception) { model.message.value = "No web browser is available on this device." }
     }
 }

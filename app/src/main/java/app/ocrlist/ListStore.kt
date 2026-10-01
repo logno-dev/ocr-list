@@ -26,6 +26,7 @@ class ListStore(context: Context) {
                         id = item.getString("id"), text = item.getString("text"),
                         quantity = item.optString("quantity"), checked = item.optBoolean("checked"),
                         originalText = item.optString("originalText"),
+                        needsReview = item.optBoolean("needsReview"),
                         bounds = bounds?.let { PhotoBounds(it.getDouble(0).toFloat(), it.getDouble(1).toFloat(), it.getDouble(2).toFloat(), it.getDouble(3).toFloat()) },
                     )
                 },
@@ -41,6 +42,7 @@ class ListStore(context: Context) {
                 items.put(JSONObject().apply {
                     put("id", item.id); put("text", item.text); put("quantity", item.quantity)
                     put("checked", item.checked); put("originalText", item.originalText)
+                    put("needsReview", item.needsReview)
                     item.bounds?.let { put("bounds", JSONArray(listOf(it.left, it.top, it.right, it.bottom))) }
                 })
             }

@@ -15,20 +15,21 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     signingConfigs {
-        if (System.getenv("SIGNING_STORE_FILE") != null) {
-            create("release") {
-                storeFile = file(System.getenv("SIGNING_STORE_FILE"))
-                storePassword = System.getenv("SIGNING_STORE_PASSWORD")
-                keyAlias = System.getenv("SIGNING_KEY_ALIAS")
-                keyPassword = System.getenv("SIGNING_KEY_PASSWORD")
-            }
+        create("development") {
+            // Intentionally public development identity, stable across machines and CI runs.
+            // Android requires a signature even for sideloaded, non-Play-Store apps.
+            storeFile = rootProject.file(".github/ocr-list-development.keystore")
+            storePassword = "android"
+            keyAlias = "ocr-list-development"
+            keyPassword = "android"
         }
     }
     buildTypes {
+        debug { signingConfig = signingConfigs.getByName("development") }
         release {
             isMinifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            signingConfig = signingConfigs.findByName("release")
+            signingConfig = signingConfigs.getByName("development")
         }
     }
     compileOptions {
@@ -49,7 +50,10 @@ dependencies {
     // Bundled model: works on first launch, including in airplane mode.
     implementation("com.google.mlkit:text-recognition:16.0.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.10.1")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.nimbusds:nimbus-jose-jwt:10.5")
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20250107")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test:runner:1.6.2")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
