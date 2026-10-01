@@ -37,3 +37,11 @@ node_modules/
 dist/
 build/
 out/
+
+# Android / Gradle
+.gradle/
+.kotlin/
+local.properties
+*.jks
+*.keystore
+captures/

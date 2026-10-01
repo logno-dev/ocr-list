@@ -1,0 +1,91 @@
+name: Android build
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || github.ref }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Install Android SDK
+        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+      - name: Set release version
+        env:
+          TAG: ${{ github.event.release.tag_name || github.ref_name }}
+        run: |
+          if [[ "$TAG" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            major=$((10#${BASH_REMATCH[1]}))
+            minor=$((10#${BASH_REMATCH[2]}))
+            patch=$((10#${BASH_REMATCH[3]}))
+            if (( major > 2000 || minor > 999 || patch > 999 )); then
+              echo 'Version components exceed supported bounds'; exit 1
+            fi
+            echo "VERSION_NAME=${TAG#v}" >> "$GITHUB_ENV"
+            echo "VERSION_CODE=$((major * 1000000 + minor * 1000 + patch + 1))" >> "$GITHUB_ENV"
+          elif [[ "$GITHUB_REF" == refs/tags/* || "$GITHUB_EVENT_NAME" == release ]]; then
+            echo 'Release tags must use vMAJOR.MINOR.PATCH, for example v1.0.0'; exit 1
+          fi
+      - name: Configure optional release signing
+        if: github.event_name != 'pull_request'
+        env:
+          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [[ -n "$KEYSTORE" ]]; then
+            test -n "$STORE_PASSWORD" && test -n "$KEY_ALIAS" && test -n "$KEY_PASSWORD"
+            printf '%s' "$KEYSTORE" | base64 --decode > "$RUNNER_TEMP/ocr-list.jks"
+            echo "SIGNING_STORE_FILE=$RUNNER_TEMP/ocr-list.jks" >> "$GITHUB_ENV"
+            echo "SIGNING_STORE_PASSWORD=$STORE_PASSWORD" >> "$GITHUB_ENV"
+            echo "SIGNING_KEY_ALIAS=$KEY_ALIAS" >> "$GITHUB_ENV"
+            echo "SIGNING_KEY_PASSWORD=$KEY_PASSWORD" >> "$GITHUB_ENV"
+          fi
+      - name: Test, lint, and build
+        run: ./gradlew --no-daemon testDebugUnitTest lintDebug assembleDebug assembleRelease
+      - name: Collect APKs
+        run: |
+          mkdir -p artifacts
+          cp app/build/outputs/apk/debug/app-debug.apk artifacts/OCR-List-debug.apk
+          if [[ -f app/build/outputs/apk/release/app-release.apk ]]; then
+            cp app/build/outputs/apk/release/app-release.apk artifacts/OCR-List.apk
+          else
+            cp app/build/outputs/apk/release/app-release-unsigned.apk artifacts/OCR-List-unsigned.apk
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OCR-List-APKs
+          path: artifacts/*.apk
+      - name: Publish tag build
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name || github.ref_name }}
+        run: |
+          if ! gh release view "$TAG" > /dev/null 2>&1; then
+            gh release create "$TAG" --verify-tag --title "OCR List ${TAG#v}" --generate-notes
+          fi
+          gh release upload "$TAG" artifacts/*.apk --clobber
+      - name: Remove signing key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/ocr-list.jks"

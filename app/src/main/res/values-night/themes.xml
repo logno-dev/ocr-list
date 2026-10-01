@@ -1,0 +1,11 @@
+<resources>
+    <style name="Theme.OCRList" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">#A0D4B4</item>
+        <item name="colorPrimaryVariant">#326A51</item>
+        <item name="colorOnPrimary">#123825</item>
+        <item name="colorSecondary">#A0D4B4</item>
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowActionModeOverlay">true</item>
+    </style>
+</resources>
