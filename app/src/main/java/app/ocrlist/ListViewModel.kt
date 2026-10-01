@@ -11,6 +11,8 @@ import app.ocrlist.chatgpt.ChatGptException
 import app.ocrlist.chatgpt.ChatGptState
 import app.ocrlist.chatgpt.LoopbackSignIn
 import app.ocrlist.chatgpt.OpenAiHttpFailure
+import app.ocrlist.chatgpt.SignInForeground
+import app.ocrlist.chatgpt.AndroidNetworkDiagnostics
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
@@ -28,7 +30,9 @@ import java.util.UUID
 
 class ListViewModel(application: Application) : AndroidViewModel(application) {
     private val store = ListStore(application)
-    private val chat = ChatGptClient(application)
+    internal val signInForeground = SignInForeground()
+    private val networkDiagnostics = AndroidNetworkDiagnostics(application) { signInForeground.isResumed }
+    private val chat = ChatGptClient(application, networkDiagnostics::describe)
     private var signIn: LoopbackSignIn? = null
     private var authJob: Job? = null
     val lists = MutableLiveData<List<Checklist>>(emptyList())
@@ -36,6 +40,7 @@ class ListViewModel(application: Application) : AndroidViewModel(application) {
     val status = MutableLiveData("Loading lists…")
     val chatState = MutableLiveData(ChatGptState())
     val authBusy = MutableLiveData(false)
+    val authStatus = MutableLiveData("Connecting to ChatGPT…")
     val browserUrl = MutableLiveData<String?>()
     val message = MutableLiveData<String?>()
     val openList = MutableLiveData<String?>()
@@ -79,13 +84,24 @@ class ListViewModel(application: Application) : AndroidViewModel(application) {
 
     fun connectChatGpt(accountId: String? = null) = accountAction {
         try {
+            authStatus.value = "Preparing ChatGPT sign-in…"
             val attempt = chat.beginSignIn(accountId)
             signIn = attempt
+            authStatus.value = "Finish signing in in your browser…"
             browserUrl.value = attempt.url
             val callback = attempt.awaitCallback()
             attempt.close()
+            if (!callback.denied) {
+                authStatus.value = "Return to OCR List to finish connecting…"
+                signInForeground.awaitResumed()
+            }
+            authStatus.value = "Completing ChatGPT sign-in…"
             chat.finishSignIn(attempt, callback)
-            try { chat.refreshModels() }
+            try {
+                signInForeground.awaitResumed()
+                authStatus.value = "Loading ChatGPT models…"
+                chat.refreshModels()
+            }
             catch (error: CancellationException) { throw error }
             catch (error: Exception) {
                 val detail = (error as? ChatGptException)?.message ?: "OpenAI returned an unexpected model list."
@@ -100,6 +116,8 @@ class ListViewModel(application: Application) : AndroidViewModel(application) {
 
     fun cancelSignIn() { authJob?.cancel(); signIn?.close() }
 
+    fun setForeground(resumed: Boolean) { signInForeground.setResumed(resumed) }
+
     fun useOffline() = accountAction { chat.useOffline() }
     fun chooseAccount(id: String) = accountAction { chat.selectAccount(id) }
     fun chooseModel(id: String) = accountAction { chat.selectModel(id) }
@@ -112,6 +130,7 @@ class ListViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun accountAction(action: suspend () -> Unit) {
         if (authBusy.value == true || busy.value == true) return
+        authStatus.value = "Connecting to ChatGPT…"
         authBusy.value = true
         authJob = viewModelScope.launch {
             try { action() }

@@ -41,7 +41,7 @@ class LoopbackSignIn(hostId: String, private val clientId: String?, email: Strin
                     val callback = if (request.endsWith("\r\n\r\n") && first.size == 3 && first[0] == "GET" &&
                         host == "127.0.0.1:${server.localPort}") ChatGptProtocol.callback(first[1], state, clientId) else null
                     val html = if (callback == null) "Invalid callback. Return to OCR List and try signing in again."
-                        else "<h2>Return to OCR List</h2><p>Finish connecting your account in the app.</p>" +
+                        else "<h2>Return to OCR List</h2><p>Tap Open OCR List below. The connection finishes only after you are back in the app.</p>" +
                             "<p><a href=\"ocrlist://oauth-complete\">Open OCR List</a></p>"
                     val body = ("<!doctype html><html><head><meta name=\"viewport\" content=\"width=device-width\">" +
                         "<title>OCR List</title></head><body>$html</body></html>").toByteArray()

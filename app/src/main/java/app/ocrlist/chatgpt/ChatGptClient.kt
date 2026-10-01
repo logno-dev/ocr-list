@@ -27,13 +27,13 @@ data class ChatGptState(
     val ready get() = useCloud && active?.connected == true && model.isNotBlank()
 }
 
-class ChatGptClient(context: Context) {
+class ChatGptClient(context: Context, networkContext: () -> String = { "" }) {
     private val store = CredentialStore(context)
     private val mutex = Mutex()
     private var data: JSONObject? = null
     var state = ChatGptState()
         private set
-    private val http = ChatGptHttp()
+    private val http = ChatGptHttp(networkContext = networkContext)
     private data class IdentityMetadata(val config: JSONObject, val keys: JSONObject, val loadedAt: Long)
     private var identityMetadata: IdentityMetadata? = null
 

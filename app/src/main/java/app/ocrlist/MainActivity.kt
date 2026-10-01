@@ -91,6 +91,7 @@ class MainActivity : AppCompatActivity() {
         model.status.observe(this) { render() }
         model.chatState.observe(this) { render() }
         model.authBusy.observe(this) { render() }
+        model.authStatus.observe(this) { render() }
         model.browserUrl.observe(this) { url ->
             if (url != null) {
                 model.browserUrl.value = null
@@ -107,11 +108,21 @@ class MainActivity : AppCompatActivity() {
         model.message.observe(this) { message ->
             if (message != null) {
                 Snackbar.make(root, message, Snackbar.LENGTH_INDEFINITE).setAction("OK") {}.apply {
-                    view.findViewById<TextView>(com.google.android.material.R.id.snackbar_text).maxLines = 10
+                    view.findViewById<TextView>(com.google.android.material.R.id.snackbar_text).maxLines = 12
                 }.show()
                 model.message.value = null
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        model.setForeground(true)
+    }
+
+    override fun onPause() {
+        model.setForeground(false)
+        super.onPause()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -177,7 +188,7 @@ class MainActivity : AppCompatActivity() {
         }
         if (model.authBusy.value == true) {
             header.addView(LinearProgressIndicator(this).apply { isIndeterminate = true })
-            header.addView(label("Connecting to ChatGPT…", 14f, muted))
+            header.addView(label(model.authStatus.value.orEmpty(), 14f, muted))
             header.addView(button("Cancel connection", true) { model.cancelSignIn() })
         }
         val body = column().apply { setPadding(dp(20), dp(16), dp(20), dp(20)) }

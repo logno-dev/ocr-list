@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!-- Test-only stand-in for an external browser pushed above MainActivity. -->
+        <activity android:name="app.ocrlist.TestBrowserActivity" android:exported="true" />
+    </application>
+</manifest>

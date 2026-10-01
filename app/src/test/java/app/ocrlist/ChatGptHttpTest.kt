@@ -161,4 +161,32 @@ class ChatGptHttpTest {
         assertTrue(timeout.message!!.contains("Model loading"))
         assertTrue(timeout.message!!.contains("timeout"))
     }
+
+    @Test fun deniedDnsAccessIsNotMisreportedAsBadDnsConfiguration() {
+        val denied = UnknownHostException("secret-code").apply {
+            initCause(java.io.IOException("getaddrinfo failed: EACCES; secret-code"))
+        }
+        val failure = OpenAiNetworkErrors.describe(OpenAiOperation.TOKEN_EXCHANGE, "auth.openai.com", denied,
+            "app background, Data Saver restricting background data")
+        assertTrue(failure.message!!.contains("network access denied"))
+        assertTrue(failure.message!!.contains("app background"))
+        assertFalse(failure.message!!.contains("secret-code"))
+    }
+
+    @Test fun errorDistinguishesForegroundAtRequestStartFromFailureTime() = runBlocking {
+        val context = java.util.concurrent.atomic.AtomicReference("app background")
+        val transport = ChatGptHttp(builder().dns(object : Dns {
+            override fun lookup(hostname: String): List<InetAddress> {
+                context.set("app foreground")
+                throw UnknownHostException("secret-code")
+            }
+        }).build(), networkContext = context::get)
+        try {
+            val failure = runCatching {
+                transport.json(tokenRequest(okhttp3.HttpUrl.Builder().scheme("https").host("openai-test.invalid").build()), OpenAiOperation.TOKEN_EXCHANGE)
+            }.exceptionOrNull()!!
+            assertTrue(failure.message!!.contains("Started: app background; failed: app foreground"))
+            assertFalse(failure.message!!.contains("secret-code"))
+        } finally { transport.close() }
+    }
 }

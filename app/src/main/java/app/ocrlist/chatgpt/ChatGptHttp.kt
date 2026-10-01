@@ -39,9 +39,11 @@ class OpenAiHttpFailure(val status: Int, val code: String, operation: OpenAiOper
 
 object OpenAiNetworkErrors {
     // Do not display raw exception messages: they can contain URLs or credential-bearing request data.
-    fun describe(operation: OpenAiOperation, host: String, error: IOException): ChatGptException {
+    fun describe(operation: OpenAiOperation, host: String, error: IOException, networkContext: String = ""): ChatGptException {
         val causes = generateSequence<Throwable>(error) { it.cause }.take(8).toList()
         val (kind, advice) = when {
+            causes.any { it.message?.contains(Regex("\\b(?:EACCES|EPERM)\\b")) == true } -> "network access denied" to
+                "Android denied this connection. Keep OCR List open while connecting and check its per-app network restrictions."
             causes.any { it is UnknownHostException } -> "DNS" to
                 "Could not resolve the server address. Try Wi-Fi/mobile data or check Private DNS and VPN settings."
             causes.any { it is SSLPeerUnverifiedException } -> "TLS certificate" to
@@ -58,12 +60,13 @@ object OpenAiNetworkErrors {
                 "The server or network proxy returned an invalid response. Try another network."
             else -> "network I/O" to "The connection was interrupted. Try again on another network."
         }
-        return ChatGptException("${operation.label} failed [$host; $kind]. $advice")
+        val context = networkContext.takeIf { it.isNotBlank() }?.let { " $it." }.orEmpty()
+        return ChatGptException("${operation.label} failed [$host; $kind].$context $advice")
     }
 }
 
 /** Transport with safe address fallback, but no automatic replay of credential/photo POST bodies. */
-class ChatGptHttp(private val http: OkHttpClient = newClientBuilder().build()) {
+class ChatGptHttp(private val http: OkHttpClient = newClientBuilder().build(), private val networkContext: () -> String = { "" }) {
     companion object {
         fun newClientBuilder(): OkHttpClient.Builder = OkHttpClient.Builder()
             .connectTimeout(20, TimeUnit.SECONDS).readTimeout(90, TimeUnit.SECONDS).callTimeout(150, TimeUnit.SECONDS)
@@ -89,12 +92,18 @@ class ChatGptHttp(private val http: OkHttpClient = newClientBuilder().build()) {
 
     suspend fun <T> execute(request: Request, operation: OpenAiOperation, consume: (Response) -> T): T =
         suspendCancellableCoroutine { continuation ->
+            val startedWith = connectionContext()
+            fun networkError(error: IOException): ChatGptException {
+                val failedWith = connectionContext()
+                val context = if (failedWith == startedWith) startedWith else "Started: $startedWith; failed: $failedWith"
+                return OpenAiNetworkErrors.describe(operation, request.url.host, error, context)
+            }
             val safeRequest = request.body?.let { request.newBuilder().method(request.method, OneShotBody(it)).build() } ?: request
             val call = http.newCall(safeRequest)
             continuation.invokeOnCancellation { call.cancel() }
             call.enqueue(object : Callback {
                 override fun onFailure(call: Call, e: IOException) {
-                    continuation.resumeWith(Result.failure(OpenAiNetworkErrors.describe(operation, request.url.host, e)))
+                    continuation.resumeWith(Result.failure(networkError(e)))
                 }
 
                 override fun onResponse(call: Call, response: Response) {
@@ -111,12 +120,14 @@ class ChatGptHttp(private val http: OkHttpClient = newClientBuilder().build()) {
                             }
                         } catch (error: IOException) {
                             // Response-body failures happen after onResponse, not in onFailure.
-                            throw OpenAiNetworkErrors.describe(operation, request.url.host, error)
+                            throw networkError(error)
                         }
                     })
                 }
             })
         }
+
+    private fun connectionContext() = runCatching { networkContext() }.getOrDefault("network state unavailable")
 
     fun close() { http.dispatcher.cancelAll(); http.connectionPool.evictAll() }
 }

@@ -19,7 +19,7 @@ A minimalist, native Android app that turns photos of written lists into editabl
 1. Open **Recognition: on-device** on the home screen.
 2. Tap **Continue with ChatGPT**. The app opens your system browser at OpenAI's sign-in page.
 3. Sign in, select your workspace if prompted, and authorize **OCR List** to use your ChatGPT plan.
-4. Tap **Open OCR List** on the callback page, or return to the app. Wait for the connection and model list to finish loading.
+4. Tap **Open OCR List** on the callback page, or return to the app promptly. Keep OCR List open while the connection and model list finish loading. The login code is exchanged only after the original app Activity is back in the foreground.
 5. In recognition settings, check the selected account and model. **Choose model** and **Refresh available models** use your account's catalog; models that explicitly exclude image input are filtered out.
 6. Scan a photo. A resized, orientation-corrected copy is sent to OpenAI; the untouched original remains on your device. Review the result before relying on it.
 
@@ -47,7 +47,9 @@ Protocol references:
 
 Connection errors name the failing step (sign-in configuration, identity keys, token exchange, session refresh, or model loading), the server, and a safe diagnostic category such as DNS, TLS, or timeout. They do not include authorization codes, tokens, raw server responses, or credential-bearing URLs. Report that full message when troubleshooting.
 
-The app fetches public identity configuration and signing keys before opening the browser so a failed identity-document download does not waste a one-time sign-in code. Network address fallback is enabled, but credential/photo POST bodies are marked one-shot and are not automatically replayed after they may have been sent. Certificate verification remains enabled.
+The app fetches public identity configuration and signing keys before opening the browser so a failed identity-document download does not waste a one-time sign-in code. The loopback callback only collects the code; token exchange waits for the original Activity to resume and its foreground network policy to settle. Browser return links reuse that Activity, and an abandoned return times out after two minutes. Network address fallback is enabled, but credential/photo POST bodies are marked one-shot and are not automatically replayed after they may have been sent. Certificate verification remains enabled.
+
+Android can report a DNS error when it blocks a background app's network access. Error diagnostics include whether the app was foreground/background at request start and failure, whether Android exposes an active validated network to it, and the Data Saver restriction status. These use fixed labels, never SSIDs, IP addresses, or account information. The normal `ACCESS_NETWORK_STATE` permission provides those diagnostics; there is no new runtime permission prompt.
 
 If the app says **sign-in completed, but models could not load**, your connection was saved. Try **Recognition → Refresh available models** rather than repeating browser sign-in (unless the message specifically says your session was rejected). For DNS/connection problems, try Wi-Fi versus mobile data and check Private DNS, VPN, or per-app network restrictions. For TLS errors, also check the device clock. Browser connectivity alone does not confirm that the app can reach the same services.
 
@@ -72,7 +74,7 @@ With an emulator or device connected:
 ./gradlew connectedDebugAndroidTest
 ```
 
-Unit tests cover list parsing, PKCE, callback validation, a real loopback callback, JWT verification/rejection, image request construction, streamed success/quota/error handling, and conservative photo references. Device tests cover Android Keystore encryption/tamper detection, recognition settings, failed-cloud photo retention, checklist editing/recreation, persistence, and real ML Kit recognition of a generated image.
+Unit tests cover list parsing, PKCE, callback validation, a real loopback callback, foreground-gated token exchange, JWT verification/rejection, safe address fallback, request replay prevention, image request construction, streamed success/quota/error handling, and conservative photo references. Device tests cover Android Keystore encryption/tamper detection, recognition settings, failed-cloud photo retention, checklist editing/recreation, persistence, and real ML Kit recognition of a generated image. A browser stand-in verifies that the return link resumes the original Activity/ViewModel and only then releases a pending exchange; it also checks rotation and network-policy diagnostics.
 
 Device tests reset the installed test app's lists and ChatGPT connections. Use an emulator or a dedicated test installation. Automated tests do not log into a real OpenAI account or consume a ChatGPT allowance; live account authorization, model availability, and handwritten accuracy need to be checked with your own account and photos.
 
